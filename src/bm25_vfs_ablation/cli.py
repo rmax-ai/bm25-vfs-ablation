@@ -19,9 +19,12 @@ from bm25_vfs_ablation.corpus.generator import (
 )
 from bm25_vfs_ablation.corpus.loader import CorpusBundle, load_bundle
 from bm25_vfs_ablation.corpus.schema import TaskRecord
+from bm25_vfs_ablation.evaluation.aggregates import write_aggregate_tables
+from bm25_vfs_ablation.evaluation.plots import produce_all_plots
 from bm25_vfs_ablation.experiment.artifacts import read_jsonl, write_jsonl_atomic
+from bm25_vfs_ablation.experiment.reporting import write_report
 from bm25_vfs_ablation.experiment.runner import ExperimentRunner
-from bm25_vfs_ablation.experiment.schemas import TerminationReason
+from bm25_vfs_ablation.experiment.schemas import RunRecord, TerminationReason
 from bm25_vfs_ablation.models.client import (
     ModelClient,
     ModelRequest,
@@ -37,6 +40,19 @@ app = typer.Typer(
 
 _PROVIDERS = frozenset({"mock", "openai_compatible"})
 _SPLITS = frozenset({"dev", "eval", "all"})
+_INCLUDE_DESIGNS = frozenset({"primary", "all"})
+_AGGREGATE_FILENAMES = (
+    "paired_outcomes.csv",
+    "condition_summary.csv",
+    "subgroup_summary.csv",
+    "intervention_summary.csv",
+    "within_vfs_regression.csv",
+    "efficiency_summary.csv",
+    "trace_examples.json",
+    "task_level.csv",
+    "stratified_summary.csv",
+    "failure_summary.csv",
+)
 
 
 def _repository_root(*paths: Path) -> Path:
@@ -79,6 +95,24 @@ def _runtime_error(error: BaseException) -> NoReturn:
     message = str(error).strip() or error.__class__.__name__
     typer.echo(f"runtime error: {message}", err=True)
     raise typer.Exit(code=1)
+
+
+def _load_validated_runs(path: Path) -> tuple[RunRecord, ...]:
+    """Read and validate every run record before any output is produced."""
+
+    records: list[RunRecord] = []
+    for line_number, row in enumerate(read_jsonl(path), start=1):
+        try:
+            records.append(RunRecord.model_validate(row))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"invalid run record in {path} at line {line_number}: {error}"
+            ) from error
+    return tuple(records)
+
+
+def _missing_aggregate_files(path: Path) -> bool:
+    return any(not (path / filename).is_file() for filename in _AGGREGATE_FILENAMES)
 
 
 def _validate_provider(provider: str) -> str:
@@ -367,6 +401,108 @@ def run(
     typer.echo(f"skipped={summary.skipped}")
     typer.echo(f"run_records={record_count}")
     typer.echo(f"runs_path={output_runs}")
+
+
+@app.command()
+def evaluate(
+    runs: Path = typer.Option(  # noqa: B008
+        ...,
+        "--runs",
+        help="Path to validated experiment run records.",
+    ),
+    output_dir: Path = typer.Option(  # noqa: B008
+        Path("results/aggregates"),
+        "--output-dir",
+        help="Directory for aggregate CSV and JSON artifacts.",
+    ),
+    plots_dir: Path = typer.Option(  # noqa: B008
+        Path("results/plots"),
+        "--plots-dir",
+        help="Directory for the ten required PNG plots.",
+    ),
+    include_design: Literal["primary", "all"] = typer.Option(  # noqa: B008
+        "primary",
+        "--include-design",
+        help="Include only primary records or all design cells.",
+    ),
+) -> None:
+    """Validate runs, write aggregate tables, and produce all plots."""
+
+    try:
+        if include_design not in _INCLUDE_DESIGNS:
+            raise ValueError("include-design must be one of: primary, all")
+        root = _repository_root()
+        runs_path = _resolve_repo_path(root, runs)
+        aggregate_path = _resolve_repo_path(root, output_dir)
+        plot_path = _resolve_repo_path(root, plots_dir)
+        records = _load_validated_runs(runs_path)
+        aggregate_outputs = write_aggregate_tables(
+            records,
+            aggregate_path,
+            include_design=include_design,
+        )
+        plot_outputs = produce_all_plots(records, plot_path)
+    except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
+        _user_error(error)
+    except Exception as error:
+        _runtime_error(error)
+
+    typer.echo(f"aggregates_dir={aggregate_path}")
+    typer.echo(f"aggregate_files={len(aggregate_outputs)}")
+    typer.echo(f"plots_dir={plot_path}")
+    typer.echo(f"plot_files={len(plot_outputs)}")
+
+
+@app.command()
+def report(
+    runs: Path = typer.Option(  # noqa: B008
+        ...,
+        "--runs",
+        help="Path to validated experiment run records.",
+    ),
+    aggregates_dir: Path = typer.Option(  # noqa: B008
+        Path("results/aggregates"),
+        "--aggregates-dir",
+        help="Directory containing aggregate tables.",
+    ),
+    plots_dir: Path = typer.Option(  # noqa: B008
+        Path("results/plots"),
+        "--plots-dir",
+        help="Directory containing plot artifacts.",
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        Path("reports/experiment.md"),
+        "--output",
+        help="Markdown report output path.",
+    ),
+) -> None:
+    """Validate runs, regenerate missing aggregates, and write the report."""
+
+    try:
+        root = _repository_root()
+        runs_path = _resolve_repo_path(root, runs)
+        aggregate_path = _resolve_repo_path(root, aggregates_dir)
+        plot_path = _resolve_repo_path(root, plots_dir)
+        report_path = _resolve_repo_path(root, output)
+        records = _load_validated_runs(runs_path)
+        if _missing_aggregate_files(aggregate_path):
+            write_aggregate_tables(
+                records,
+                aggregate_path,
+                include_design="primary",
+            )
+        written_report = write_report(
+            records,
+            aggregate_path,
+            plot_path,
+            report_path,
+        )
+    except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
+        _user_error(error)
+    except Exception as error:
+        _runtime_error(error)
+
+    typer.echo(f"report_path={written_report}")
 
 
 __all__ = ["app"]
