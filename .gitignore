@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.ty/
+.direnv/
+
+# Secrets / local config
+.env
+.envrc
+
+# Agent artifacts
+.serena/
+.hermes/
+
+# Generated datasets (regenerable from seed + committed config; see README)
+data/*
+!data/.gitkeep
+
+# Run outputs (regenerable; aggregates/report land in reports/)
+results/*
+!results/.gitkeep
+
+# OS
+.DS_Store

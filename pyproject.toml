@@ -1,0 +1,44 @@
+[project]
+name = "bm25-vfs-ablation"
+version = "0.1.0"
+description = "BM25 VFS workspace vs BM25 snippet ablation: reproducible multi-hop QA experiment harness"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "rank-bm25>=0.2.2",
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+    "openai>=1.40",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "ty",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bm25_vfs_ablation"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["*.md", ".hermes", ".serena"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
