@@ -26,7 +26,7 @@ from bm25_vfs_ablation.retrieval.bm25 import BM25Index
 from bm25_vfs_ablation.retrieval.chunking import Chunker
 
 
-def _config(*, output_runs: str = "results/runs.jsonl", token_ceiling: int = 512) -> AppConfig:
+def _config(*, output_runs: str = "results/runs.jsonl", token_ceiling: int = 4096) -> AppConfig:
     return AppConfig.model_validate(
         {
             "schema_version": 1,
@@ -234,7 +234,7 @@ def test_runner_writes_complete_records(tmp_path: Path) -> None:
         record = RunRecord.model_validate(row)
         assert set(row) == set(record.model_dump(mode="json", by_alias=True))
         assert row["started_at"] and row["finished_at"]
-        assert row["token_accounting"]["limit"] == 512
+        assert row["token_accounting"]["limit"] == 4096
 
 
 def test_runner_resume_skips_completed_calls(tmp_path: Path) -> None:
@@ -278,4 +278,4 @@ def test_runner_token_ceiling_equal_by_condition(tmp_path: Path) -> None:
         record.token_accounting.limit
         for record in summary.records
         if record.condition in {Condition.SNIPPETS, Condition.VFS}
-    } == {512}
+    } == {4096}

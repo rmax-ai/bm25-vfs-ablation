@@ -45,3 +45,10 @@ def test_dockerfile_runs_nonroot() -> None:
 
 def test_dockerfile_entrypoint() -> None:
     assert 'ENTRYPOINT ["python", "-m", "bm25_vfs_ablation"]' in _dockerfile_text()
+
+
+def test_dockerfile_pins_base_digest() -> None:
+    """§8: the operator pinned a verified multi-arch digest after the build."""
+
+    text = _dockerfile_text()
+    assert "ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:" in text

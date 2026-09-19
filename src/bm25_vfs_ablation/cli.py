@@ -228,6 +228,7 @@ def _model_client(provider: str, config: Any, bundle: CorpusBundle) -> ModelClie
         api_key,
         config.model.model,
         max_attempts=config.model.max_attempts,
+        timeout_seconds=config.model.timeout_seconds,
     )
 
 
@@ -431,10 +432,12 @@ def run(
             else _resolve_repo_path(root, effective_config.experiment.output_runs)
         )
         client = _model_client(provider, effective_config, selected_bundle)
+        cache_dir = output_runs.parent / "cache"
         summary = ExperimentRunner(
             effective_config,
             selected_bundle,
             client,
+            cache=FileResponseCache(cache_dir),
             output_runs=output_runs,
         ).run()
         if provider == "mock":
@@ -531,7 +534,12 @@ def report(
         help="Markdown report output path.",
     ),
 ) -> None:
-    """Validate runs, regenerate missing aggregates, and write the report."""
+    """Validate runs, regenerate aggregate tables, and write the report.
+
+    Aggregates are always regenerated from the supplied runs (AIR-7): reusing
+    a complete directory left over from a different experiment would attach
+    stale outcome tables to the wrong records.
+    """
 
     try:
         root = _repository_root()
@@ -540,12 +548,11 @@ def report(
         plot_path = _resolve_repo_path(root, plots_dir)
         report_path = _resolve_repo_path(root, output)
         records = _load_validated_runs(runs_path)
-        if _missing_aggregate_files(aggregate_path):
-            write_aggregate_tables(
-                records,
-                aggregate_path,
-                include_design="primary",
-            )
+        write_aggregate_tables(
+            records,
+            aggregate_path,
+            include_design="primary",
+        )
         written_report = write_report(
             records,
             aggregate_path,

@@ -24,7 +24,7 @@ from bm25_vfs_ablation.retrieval.chunking import Chunker
 
 def _config(
     *,
-    token_ceiling: int = 2200,
+    token_ceiling: int = 4096,
     max_tool_calls: int = 8,
     invalid_call_limit: int = 3,
     oracle_mode: bool = False,

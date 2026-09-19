@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from bm25_vfs_ablation import Condition, ToolName
+from bm25_vfs_ablation import Condition, TerminationReason, ToolName
 from bm25_vfs_ablation.config import AppConfig
 from bm25_vfs_ablation.corpus.loader import CorpusBundle
 from bm25_vfs_ablation.corpus.schema import TaskRecord
@@ -158,6 +158,70 @@ def load_completed_run_keys(path: Path | str) -> set[str]:
             raise ValueError(f"duplicate run_key in {target}: {record.run_key}")
         keys.add(record.run_key)
     return keys
+
+
+def validate_gold_chunks_against_index(
+    bundle: CorpusBundle,
+    index: object,
+) -> None:
+    """Reject bundles whose gold chunk ids are absent from the current index.
+
+    Guards the PLAN §8 import flaw: tasks generated or imported under a
+    different chunking configuration carry gold chunk ids that cannot exist in
+    this index; running them would silently compare incompatible experiments.
+    """
+
+    chunk_ids = {
+        chunk_id
+        for chunk in getattr(index, "chunks", ())
+        if (chunk_id := getattr(chunk, "chunk_id", None)) is not None
+    }
+    missing: list[tuple[str, str]] = []
+    for task in bundle.tasks:
+        for chunk_id in task.gold_chunk_ids:
+            if chunk_id not in chunk_ids:
+                missing.append((task.task_id, chunk_id))
+    if missing:
+        preview = ", ".join(
+            f"{task_id} -> {chunk_id}" for task_id, chunk_id in missing[:5]
+        )
+        raise ValueError(
+            f"{len(missing)} gold chunk reference(s) are absent from the current index "
+            f"(first: {preview}); tasks were generated under a different chunking "
+            "configuration — regenerate the gold chunks with the active chunking "
+            "config before running"
+        )
+
+
+def _verify_resume_provenance(
+    record: RunRecord | None,
+    *,
+    config_hash: str,
+    corpus_sha256: str,
+) -> None:
+    """Reject resuming a run key under a different config or corpus (AIR-8).
+
+    Without this check an interrupted pair could silently combine arms that
+    were produced under different models, budgets, prompts, or corpora.
+    """
+
+    if record is None:  # pragma: no cover - keys originate from the same file
+        return
+    problems: list[str] = []
+    if record.config_sha256 != config_hash:
+        problems.append(
+            f"config hash {record.config_sha256[:12]}... != current {config_hash[:12]}..."
+        )
+    if record.corpus_sha256 != corpus_sha256:
+        problems.append(
+            f"corpus hash {record.corpus_sha256[:12]}... != current {corpus_sha256[:12]}..."
+        )
+    if problems:
+        raise ValueError(
+            f"cannot resume {record.run_key}: the existing record was produced under a "
+            f"different experiment state ({'; '.join(problems)}); use a fresh output "
+            "file or experiment_id instead of mixing states"
+        )
 
 
 @dataclass(slots=True)
@@ -351,6 +415,29 @@ def _initial_prompt_and_snippets(
     return messages, ()
 
 
+def _has_undelivered_final(result: HarnessResult) -> bool:
+    """Return True when the final tool result never reached a model request (AIR-3).
+
+    On MAX_TOOL_CALLS and BUDGET_EXHAUSTED terminations the harness stops
+    immediately after appending the final tool message; no subsequent model
+    request carries it, so its content was never model-visible.
+    """
+
+    return result.termination in (
+        TerminationReason.MAX_TOOL_CALLS,
+        TerminationReason.BUDGET_EXHAUSTED,
+    ) and bool(result.trace)
+
+
+def _scoring_trace(result: HarnessResult) -> tuple[ToolTraceEntry, ...]:
+    """Return the trace entries whose results were plausibly model-visible."""
+
+    trace = tuple(result.trace)
+    if _has_undelivered_final(result):
+        return trace[:-1]
+    return trace
+
+
 def _first_gold_fact_time_ms(
     task: TaskRecord,
     condition: Condition,
@@ -365,7 +452,7 @@ def _first_gold_fact_time_ms(
         return None
 
     elapsed_ms = max(0.0, result.latency.retrieval_ms)
-    for entry in result.trace:
+    for entry in _scoring_trace(result):
         elapsed_ms += max(0.0, entry.latency_ms)
         prefix = derive_accessed_evidence(
             task,
@@ -426,9 +513,10 @@ def _record_for_result(
         coverage_call = None
     else:
         trace = list(result.trace)
+        scoring_trace = _scoring_trace(result)
         accessed = derive_accessed_evidence(
             task,
-            trace=trace,
+            trace=scoring_trace,
             corpus_chunks=chunks,
         )
         max_tool_calls = assignment.max_tool_calls_permitted
@@ -454,7 +542,7 @@ def _record_for_result(
         coverage_call = complete_coverage_call_ordinal(
             task,
             (),
-            trace,
+            scoring_trace,
             corpus_chunks=chunks,
         )
 
@@ -587,6 +675,7 @@ class ExperimentRunner:
             )
         self.index = index
         self.chunks = tuple(getattr(index, "chunks", ()))
+        validate_gold_chunks_against_index(bundle, index)
 
     def _context(self, observation: _RunObservation) -> HarnessContext:
         model = _ObservedModel(self.model, observation)
@@ -643,11 +732,19 @@ class ExperimentRunner:
         assignments = expand_design(self.config, self.bundle.tasks)
         tasks_by_id = {task.task_id: task for task in self.bundle.tasks}
         config_hash = _config_hash(self.config)
+        existing_by_key = {
+            record.run_key: record for record in _read_run_records(self.output_runs)
+        }
         written: list[RunRecord] = []
         skipped: list[str] = []
 
         for assignment in assignments:
             if assignment.run_key in completed_keys:
+                _verify_resume_provenance(
+                    existing_by_key.get(assignment.run_key),
+                    config_hash=config_hash,
+                    corpus_sha256=self.bundle.corpus_sha256,
+                )
                 skipped.append(assignment.run_key)
                 continue
             task = tasks_by_id[assignment.task_id]
@@ -665,4 +762,5 @@ __all__ = [
     "RunSummary",
     "condition_order",
     "load_completed_run_keys",
+    "validate_gold_chunks_against_index",
 ]

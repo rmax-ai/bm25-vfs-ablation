@@ -590,6 +590,7 @@ class VfsHarness(Harness):
             oracle_mode=oracle_mode,
         )
         tools = tool_schema()
+        schema_tokens = budget.tokenizer.count_text(canonical_json(tools))
         trace: list[ToolTraceEntry] = []
         errors: list[ErrorRecord] = []
         seen_requests: set[str] = set()
@@ -613,6 +614,7 @@ class VfsHarness(Harness):
                 admission = budget.plan_call(
                     messages,
                     context.config.harness.max_answer_tokens,
+                    extra_input_tokens=schema_tokens,
                 )
                 if not admission.admitted:
                     termination = TerminationReason.BUDGET_EXHAUSTED

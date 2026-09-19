@@ -204,7 +204,12 @@ def _run_four_tasks(root: Path) -> tuple[str, str]:
     bundle = load_bundle(hashes.corpus_path, hashes.tasks_path)
     config = load_config(
         REPOSITORY_ROOT / "configs" / "default.yaml",
-        overrides={"model": {"provider": "mock", "api_key": None}},
+        overrides={
+            "model": {"provider": "mock", "api_key": None},
+            # AIR-1: tool-schema tokens are charged every turn; give the
+            # four-task mock enough ceiling to finish multi-hop VFS scripts.
+            "experiment": {"token_ceiling": 8192},
+        },
     )
     runs_path = root / "results" / "runs.jsonl"
     summary = ExperimentRunner(

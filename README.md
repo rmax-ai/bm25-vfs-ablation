@@ -73,8 +73,24 @@ and concurrency policy. Condition order per task is randomized from a seeded SHA
 provider bias cannot systematically favor one arm. Model responses are cached under a SHA-256
 key covering condition, model config, messages, tool schema, corpus hash, and experiment hash.
 
+Token accounting deliberately charges the **full request surface on every turn**: all messages
+(repeated history), tool-call arguments, tool results, and — on every VFS turn — the complete
+tool schema (≈558 estimated tokens for the four-tool schema). The VFS arm therefore spends part
+of its budget on protocol rather than content; this fixed overhead asymmetry is reported as a
+validity threat rather than waived, and it means low ceilings starve the VFS arm first.
+
 The optional intervention experiment assigns **permitted** maximum tool calls from
 `[0, 1, 2, 4, 8, 12]`; the dose axis is the assigned limit, never the observed call count.
+
+## Importing a custom corpus
+
+Point the config's `corpus.corpus_path` and `corpus.tasks_path` at your own JSONL files
+(same schemas as `generate` writes) and run `run --config` as usual. Imports must be
+**schema-complete**: exact fact spans, gold document/chunk ids consistent with the active
+chunking configuration (the runner rejects gold chunk ids that are absent from the current
+index at startup), and — for deterministic scoring — exhaustive acceptable answer variants.
+There is no inference path from an unlabeled folder: arbitrary documents cannot be
+auto-annotated into gold evidence, by design.
 
 ## Live model runs (operator-gated)
 
@@ -95,16 +111,21 @@ kept behind the operator gate.
 
 ## Docker
 
-`Dockerfile` is a best-effort, ARM64-capable recipe (uv base image, lockfile-first `uv sync
---frozen`, nonroot user, module entrypoint). **Docker is untested on this build host — no
-Docker daemon is available**, and the repository makes no claim that the image was built or run.
-Static assertions only (`tests/test_dockerfile_static.py`); a full build/run check remains an
-operator follow-up.
+`Dockerfile` is a best-effort, ARM64-capable recipe (uv base image pinned to a resolved
+multi-arch digest, lockfile-first `uv sync --frozen`, nonroot user, module entrypoint).
+**Docker is untested on this build host — no Docker daemon is available**, and the repository
+makes no claim that the image was built or run. Static assertions only
+(`tests/test_dockerfile_static.py`); a full build/run check remains an operator follow-up.
 
 ## Limitations and threats to validity
 
 - **Synthetic tasks.** Generated enterprise-flavored documents and multi-hop questions are not
   production traffic; realism, noise, and stakes are limited by construction.
+- **Exact-answer scoring.** A single canonical answer plus variants can still penalize correct
+  paraphrases (e.g., quoted or re-worded answers); imported tasks must supply exhaustive variants
+  or accept conservative false negatives. The optional judge never replaces primary scoring.
+- **Fixed protocol overhead.** The VFS arm pays tool-schema and history costs from the same
+  ceiling; low ceilings starve it first. Prompt/accounting components are reported per turn.
 - **Prompt sensitivity.** Small changes to instructions, context formatting, or tool descriptions
   may change outcomes; the frozen prompts here are one defensible point in that space.
 - **Provider drift.** A different served model or later version may not reproduce observations;

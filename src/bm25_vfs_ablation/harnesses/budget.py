@@ -154,14 +154,22 @@ class BudgetController:
         self,
         messages: Sequence[Any],
         output_cap: int,
+        *,
+        extra_input_tokens: int = 0,
     ) -> CallAdmission:
-        """Estimate and admit a call without changing controller state."""
+        """Estimate and admit a call without changing controller state.
+
+        ``extra_input_tokens`` charges request surface that is not part of the
+        message list itself — most importantly the tool schema, which is
+        resent on every VFS turn and must reduce the admitted budget (AIR-1).
+        """
 
         requested_cap = _require_integer(output_cap, "output_cap")
+        extras = _require_integer(extra_input_tokens, "extra_input_tokens")
         input_tokens = _require_integer(
             self._tokenizer.count_messages(messages),
             "tokenizer input count",
-        )
+        ) + extras
         remaining_before = self.remaining
         effective_cap = min(requested_cap, max(0, remaining_before - input_tokens))
         if effective_cap < 1:

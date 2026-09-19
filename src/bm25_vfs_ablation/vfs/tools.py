@@ -230,6 +230,36 @@ class VfsToolExecutor:
             truncated = True
         return fitted, truncated
 
+    @staticmethod
+    def _visible_lines(text: str, fitted: str) -> int:
+        """Count fully visible lines of ``text`` after prefix-fitting (AIR-3).
+
+        When the content was truncated, only newline-terminated lines count;
+        a partially visible final line is excluded so evidence accounting
+        never credits lines the model could not fully see.
+        """
+
+        if fitted == text:
+            return len(text.splitlines())
+        return fitted.count("\n")
+
+    @staticmethod
+    def _visible_preview_count(blocks: list[str], fitted: str) -> int:
+        """Count preview blocks fully contained in the fitted content (AIR-3)."""
+
+        joined = "\n".join(blocks)
+        if fitted == joined:
+            return len(blocks)
+        offset = 0
+        visible = 0
+        for block in blocks:
+            end = offset + len(block)
+            if end > len(fitted):
+                break
+            visible += 1
+            offset = end + 1  # newline separator
+        return visible
+
     def _success(
         self,
         tool: ToolName,
@@ -326,11 +356,13 @@ class VfsToolExecutor:
             for preview, _ in previews
         ]
         content, truncated = self._fit_content("\n".join(preview_blocks))
+        visible_blocks = self._visible_preview_count(preview_blocks, content)
+        visible_previews = previews[:visible_blocks]
         return self._success(
             ToolName.GREP,
             content,
-            paths=[preview.path for preview, _ in previews],
-            line_ranges=[_line_range(preview) for preview, _ in previews],
+            paths=[preview.path for preview, _ in visible_previews],
+            line_ranges=[_line_range(preview) for preview, _ in visible_previews],
             truncated=truncated,
         )
 
@@ -357,11 +389,23 @@ class VfsToolExecutor:
         )
         content_slice = self._vfs.read(path, start_line, end_line)
         content, truncated = self._fit_content(content_slice.text)
+        visible = self._visible_lines(content_slice.text, content)
+        visible_ranges = (
+            [
+                LineRange(
+                    path=content_slice.path,
+                    start_line=content_slice.start_line,
+                    end_line=content_slice.start_line + visible - 1,
+                )
+            ]
+            if visible > 0
+            else []
+        )
         return self._success(
             ToolName.READ,
             content,
             paths=[content_slice.path],
-            line_ranges=[_line_range(content_slice)],
+            line_ranges=visible_ranges,
             truncated=truncated,
         )
 

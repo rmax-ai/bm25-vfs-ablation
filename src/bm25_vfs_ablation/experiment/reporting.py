@@ -281,6 +281,42 @@ def _judge_state(records: Iterable[object]) -> str:
     return "not recorded"
 
 
+def _mock_state(records: Iterable[object]) -> str:
+    """Classify the record set by the mock-oracle policy stamp (PLAN §8 mitigation)."""
+
+    states: list[bool] = []
+    for record in records:
+        value = _field(record, "scoring_details.mock_oracle_policy")
+        states.append(value is True)
+    if not states:
+        return "none"
+    if all(states):
+        return "all"
+    if any(states):
+        return "mixed"
+    return "none"
+
+
+def _mock_paragraph(records: tuple[object, ...]) -> str:
+    """Return the mock-policy notice required for mock-only or contaminated sets."""
+
+    state = _mock_state(records)
+    if state == "all":
+        return _tag(
+            "[OBSERVED]",
+            "Mock device-check: every run record carries "
+            "scoring_details.mock_oracle_policy=true; this report exercises the offline "
+            "pipeline only and is not a scientific result or evidence about model capability.",
+        )
+    if state == "mixed":
+        return _tag(
+            "[OBSERVED]",
+            "Mock/live contamination: the record set mixes mock-stamped and other records; "
+            "comparisons across this set are invalid until the runs are separated.",
+        )
+    return ""
+
+
 def _fmt_number(value: float | None, *, digits: int = 3) -> str | None:
     if value is None:
         return None
@@ -645,6 +681,12 @@ def generate_report(
     """Generate a deterministic Markdown report from records and aggregate artifacts."""
 
     record_rows = _normalise_records(records)
+    mock_state = _mock_state(record_rows)
+    if mock_state == "mixed":
+        raise ValueError(
+            "the record set mixes mock-stamped and other records; separate the runs "
+            "before generating a report (mock device-checks must not be pooled with live data)"
+        )
     aggregate_path = _expanded_path(aggregates_dir)
     plot_path = _expanded_path(plots_dir)
     report_path = (
@@ -670,12 +712,31 @@ def generate_report(
         "",
     ]
     paired_text = _paired_observation(paired)
+    mock_note = _mock_paragraph(record_rows)
+    if mock_note:
+        lines.append(mock_note)
     if paired_text:
-        lines.append(_tag("[OBSERVED]", f"The primary paired outcome table reports {paired_text}."))
+        headline_suffix = (
+            " Mock device-check: not a scientific result." if mock_state == "all" else ""
+        )
+        lines.append(
+            _tag(
+                "[OBSERVED]",
+                f"The primary paired outcome table reports {paired_text}.{headline_suffix}",
+            )
+        )
     else:
         lines.append(_not_run(paired, "the primary paired outcome table is unavailable"))
     paired_inference = _paired_inference(paired)
-    if paired_inference:
+    if mock_state == "all":
+        lines.append(
+            _tag(
+                "[OBSERVED]",
+                "Paired statistical inference is suppressed for this mock device-check; "
+                "mocked runs support no statistical, causal, or scientific claim.",
+            )
+        )
+    elif paired_inference:
         lines.append(
             _tag(
                 "[INFERENCE]",
@@ -841,6 +902,12 @@ def generate_report(
                 "comparison is the report's causal-intervention evidence; it does not assign "
                 "the observed number of calls.",
             )
+            if mock_state != "all"
+            else _tag(
+                "[OBSERVED]",
+                "Intervention causal claims are suppressed for this mock device-check; "
+                "mocked runs support no causal claim.",
+            )
         )
     else:
         lines.append(
@@ -968,7 +1035,15 @@ def generate_report(
         lines.append(_tag("[INFERENCE]", f"**{title}.** {explanation}"))
 
     lines.extend(["", "## Conclusions", ""])
-    if paired_text:
+    if mock_state == "all":
+        lines.append(
+            _tag(
+                "[OBSERVED]",
+                "Conclusions are suppressed for this mock device-check; scientific "
+                "conclusions require a non-mock run under the recorded configuration.",
+            )
+        )
+    elif paired_text:
         lines.append(
             _tag(
                 "[INFERENCE]",
@@ -982,20 +1057,21 @@ def generate_report(
             "[INFERENCE] No primary conclusion is reported because the required paired "
             "analysis was not run or was unavailable."
         )
-    if intervention_text:
-        lines.append(
-            _tag(
-                "[CAUSAL-INTERVENTION]",
-                "The assigned-call comparison may support an intervention-specific conclusion "
-                "only for the recorded assignment and design cell; it does not turn observed "
-                "calls into a randomized exposure.",
+    if mock_state != "all":
+        if intervention_text:
+            lines.append(
+                _tag(
+                    "[CAUSAL-INTERVENTION]",
+                    "The assigned-call comparison may support an intervention-specific conclusion "
+                    "only for the recorded assignment and design cell; it does not turn observed "
+                    "calls into a randomized exposure.",
+                )
             )
-        )
-    else:
-        lines.append(
-            "[INFERENCE] No intervention conclusion is reported because the intervention "
-            "cell was not run."
-        )
+        else:
+            lines.append(
+                "[INFERENCE] No intervention conclusion is reported because the intervention "
+                "cell was not run."
+            )
     lines.append(
         _tag(
             "[SPECULATION]",

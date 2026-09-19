@@ -66,6 +66,7 @@ class OpenAICompatibleClient:
         http_client: httpx.Client | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         max_attempts: int = 3,
+        timeout_seconds: float | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url must not be empty")
@@ -73,10 +74,17 @@ class OpenAICompatibleClient:
             raise ValueError("model must not be empty")
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive when set")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
-        self._http_client = http_client or httpx.Client()
+        if http_client is not None:
+            self._http_client = http_client
+        elif timeout_seconds is not None:
+            self._http_client = httpx.Client(timeout=timeout_seconds)
+        else:
+            self._http_client = httpx.Client()
         self._sleeper = sleeper
         self._max_attempts = max_attempts
 
