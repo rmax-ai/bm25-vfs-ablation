@@ -21,10 +21,14 @@ from bm25_vfs_ablation.corpus.loader import CorpusBundle, load_bundle
 from bm25_vfs_ablation.corpus.schema import TaskRecord
 from bm25_vfs_ablation.evaluation.aggregates import write_aggregate_tables
 from bm25_vfs_ablation.evaluation.plots import produce_all_plots
-from bm25_vfs_ablation.experiment.artifacts import read_jsonl, write_jsonl_atomic
+from bm25_vfs_ablation.experiment.artifacts import (
+    read_jsonl,
+    write_jsonl_atomic,
+)
 from bm25_vfs_ablation.experiment.reporting import write_report
 from bm25_vfs_ablation.experiment.runner import ExperimentRunner
 from bm25_vfs_ablation.experiment.schemas import RunRecord, TerminationReason
+from bm25_vfs_ablation.models.cache import FileResponseCache
 from bm25_vfs_ablation.models.client import (
     ModelClient,
     ModelRequest,
@@ -53,6 +57,9 @@ _AGGREGATE_FILENAMES = (
     "stratified_summary.csv",
     "failure_summary.csv",
 )
+_SMOKE_TASK_COUNT = 8
+_SMOKE_PRIMARY_RECORD_COUNT = _SMOKE_TASK_COUNT * 2
+_SMOKE_TOKEN_CEILING = 4096
 
 
 def _repository_root(*paths: Path) -> Path:
@@ -246,6 +253,54 @@ def _mark_mock_records(path: Path, run_keys: set[str]) -> None:
         changed = True
     if changed:
         write_jsonl_atomic(path, rows)
+
+
+def _create_smoke_run_directory(workdir: Path, seed: int) -> Path:
+    """Create a fresh run child without deleting or overwriting prior artifacts."""
+
+    target = Path(os.path.expanduser(os.fspath(workdir)))
+    if target.exists() and not target.is_dir():
+        raise ValueError(f"smoke workdir is not a directory: {target}")
+    target.mkdir(parents=True, exist_ok=True)
+    run_dir = target / f"run-{seed}"
+    if run_dir.exists():
+        raise ValueError(f"refusing to reuse existing smoke run directory: {run_dir}")
+    run_dir.mkdir()
+    return run_dir
+
+
+def _validate_smoke_records(records: tuple[RunRecord, ...]) -> None:
+    """Validate the compact primary-pair and token-ceiling smoke contract."""
+
+    if len(records) != _SMOKE_PRIMARY_RECORD_COUNT:
+        raise RuntimeError(
+            f"smoke expected {_SMOKE_PRIMARY_RECORD_COUNT} records, got {len(records)}"
+        )
+    primary = [record for record in records if record.design_cell.value == "primary"]
+    if len(primary) != _SMOKE_PRIMARY_RECORD_COUNT:
+        raise RuntimeError(
+            f"smoke expected {_SMOKE_PRIMARY_RECORD_COUNT} primary records, got {len(primary)}"
+        )
+
+    conditions_by_task: dict[str, set[str]] = {}
+    for record in primary:
+        conditions_by_task.setdefault(record.task_id, set()).add(record.condition.value)
+        if record.total_tokens > record.token_accounting.limit:
+            raise RuntimeError(f"smoke token ceiling exceeded for {record.run_key}")
+        if record.token_accounting.limit != _SMOKE_TOKEN_CEILING:
+            raise RuntimeError(f"smoke token ceiling changed for {record.run_key}")
+        if record.returned_model_id != "mock-scripted-v1":
+            raise RuntimeError(f"smoke returned an unexpected model ID for {record.run_key}")
+        if record.errors:
+            raise RuntimeError(f"smoke recorded an error for {record.run_key}")
+        if record.condition.value == "snippets" and record.tool_trace:
+            raise RuntimeError(f"smoke snippet trace was not empty for {record.run_key}")
+        if record.condition.value == "vfs" and not record.tool_trace:
+            raise RuntimeError(f"smoke VFS trace was empty for {record.run_key}")
+    if len(conditions_by_task) != _SMOKE_TASK_COUNT or any(
+        conditions != {"snippets", "vfs"} for conditions in conditions_by_task.values()
+    ):
+        raise RuntimeError("smoke primary records are not paired by task and condition")
 
 
 @app.command()
@@ -503,6 +558,165 @@ def report(
         _runtime_error(error)
 
     typer.echo(f"report_path={written_report}")
+
+
+@app.command()
+def smoke(
+    workdir: Path = typer.Option(  # noqa: B008
+        Path(".smoke"),
+        "--workdir",
+        help="Directory containing the isolated smoke run.",
+    ),
+    seed: int = typer.Option(42, "--seed", help="Deterministic generator seed."),
+) -> None:
+    """Run the fully offline smoke workflow in one isolated run directory."""
+
+    try:
+        run_dir = _create_smoke_run_directory(workdir, seed)
+
+        data_dir = run_dir / "data" / "generated"
+        results_dir = run_dir / "results"
+        aggregates_dir = results_dir / "aggregates"
+        plots_dir = results_dir / "plots"
+        cache_dir = results_dir / "cache"
+        reports_dir = run_dir / "reports"
+        config_path = run_dir / "config.yaml"
+        runs_path = results_dir / "runs.jsonl"
+
+        generation_config = GenerationConfig(
+            seed=seed,
+            dev_tasks=4,
+            eval_tasks=8,
+            corpus_size=80,
+            distractors=6,
+            min_hops=2,
+            max_hops=4,
+        )
+        documents, task_records = generate_dataset(generation_config)
+        hashes = write_dataset(data_dir, documents, task_records)
+
+        config_data = {
+            "schema_version": 1,
+            "experiment": {
+                "experiment_id": None,
+                "seed": seed,
+                "conditions": ["snippets", "vfs"],
+                "token_ceiling": 4096,
+                "concurrency": 1,
+                "oracle_mode": False,
+                "resume": True,
+                "output_runs": "results/runs.jsonl",
+            },
+            "corpus": {
+                "corpus_path": "data/generated/corpus.jsonl",
+                "tasks_path": "data/generated/tasks.jsonl",
+                "corpus_version": "synthetic-v1",
+            },
+            "chunking": {
+                "chunk_size_tokens": 180,
+                "chunk_overlap_tokens": 30,
+            },
+            "retrieval": {
+                "implementation": "rank_bm25_okapi",
+                "top_k": 8,
+                "k1": 1.5,
+                "b": 0.75,
+                "epsilon": 0.25,
+                "query_tokenizer": "unicode_word_v1",
+            },
+            "harness": {
+                "retrieval_context_tokens": 1800,
+                "max_answer_tokens": 256,
+                "max_tool_calls": 8,
+                "invalid_call_limit": 3,
+                "tool_result_tokens_per_call": 768,
+                "initial_candidate_documents": 5,
+            },
+            "model": {
+                "provider": "mock",
+                "base_url": "http://offline.invalid/v1",
+                "api_key": None,
+                "model": "mock-scripted-v1",
+                "temperature": 0.0,
+                "top_p": 1.0,
+                "seed": seed,
+                "timeout_seconds": 60.0,
+                "max_attempts": 2,
+                "tokenizer": "regex_v1",
+            },
+            "evaluation": {
+                "bootstrap_resamples": 100,
+                "bootstrap_seed": 20250308,
+                "confidence_level": 0.95,
+                "judge_enabled": False,
+                "estimated_input_usd_per_million": 0.0,
+                "estimated_output_usd_per_million": 0.0,
+            },
+        }
+        config_path.write_text(
+            yaml.safe_dump(config_data, sort_keys=False),
+            encoding="utf-8",
+        )
+        effective_config = load_config(config_path)
+        bundle = load_bundle(data_dir / "corpus.jsonl", data_dir / "tasks.jsonl")
+        eval_bundle = replace(
+            bundle,
+            tasks=tuple(task for task in bundle.tasks if task.split.value == "eval"),
+        )
+        client = _model_client("mock", effective_config, eval_bundle)
+        summary = ExperimentRunner(
+            effective_config,
+            eval_bundle,
+            model=client,
+            cache=FileResponseCache(cache_dir),
+            output_runs=runs_path,
+        ).run()
+        _mark_mock_records(runs_path, {record.run_key for record in summary.records})
+        if any(
+            record.termination_reason is TerminationReason.MODEL_ERROR for record in summary.records
+        ):
+            raise RuntimeError("one or more smoke model calls failed")
+
+        records = _load_validated_runs(runs_path)
+        _validate_smoke_records(records)
+        aggregate_outputs = write_aggregate_tables(
+            records,
+            aggregates_dir,
+            include_design="primary",
+        )
+        plot_outputs = produce_all_plots(records, plots_dir)
+        if len(aggregate_outputs) != len(_AGGREGATE_FILENAMES):
+            raise RuntimeError(
+                f"smoke expected {len(_AGGREGATE_FILENAMES)} aggregate artifacts, "
+                f"got {len(aggregate_outputs)}"
+            )
+        if len(plot_outputs) != 10:
+            raise RuntimeError(f"smoke expected ten plot artifacts, got {len(plot_outputs)}")
+        report_path = write_report(
+            records,
+            aggregates_dir,
+            plots_dir,
+            reports_dir / "experiment.md",
+        )
+    except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
+        _user_error(error)
+    except Exception as error:
+        _runtime_error(error)
+
+    typer.echo(f"smoke_run_dir={run_dir}")
+    typer.echo(f"config_path={config_path}")
+    typer.echo(f"corpus_path={hashes.corpus_path}")
+    typer.echo(f"corpus_sha256={hashes.corpus_sha256}")
+    typer.echo(f"tasks_path={hashes.tasks_path}")
+    typer.echo(f"tasks_sha256={hashes.tasks_sha256}")
+    typer.echo(f"cache_dir={cache_dir}")
+    typer.echo(f"runs_path={runs_path}")
+    typer.echo(f"run_records={len(records)}")
+    typer.echo(f"aggregates_dir={aggregates_dir}")
+    typer.echo(f"aggregate_files={len(aggregate_outputs)}")
+    typer.echo(f"plots_dir={plots_dir}")
+    typer.echo(f"plot_files={len(plot_outputs)}")
+    typer.echo(f"report_path={report_path}")
 
 
 __all__ = ["app"]
