@@ -1,13 +1,13 @@
-.PHONY: setup test lint generate experiment experiment-intervention evaluate report
+.PHONY: setup lint test generate experiment intervention evaluate report smoke accept
 
 setup:
-	uv sync --dev
-
-test:
-	uv run pytest -q
+	uv sync --frozen
 
 lint:
-	uv run ruff check . && uv run ruff format --check .
+	uv run ruff check .
+
+test:
+	uv run pytest
 
 generate:
 	uv run python -m bm25_vfs_ablation generate --tasks 200 --seed 42
@@ -15,7 +15,7 @@ generate:
 experiment:
 	uv run python -m bm25_vfs_ablation run --config configs/default.yaml
 
-experiment-intervention:
+intervention:
 	uv run python -m bm25_vfs_ablation run --config configs/tool_call_intervention.yaml
 
 evaluate:
@@ -23,3 +23,9 @@ evaluate:
 
 report:
 	uv run python -m bm25_vfs_ablation report --runs results/runs.jsonl --output reports/experiment.md
+
+smoke:
+	uv run python -m bm25_vfs_ablation smoke --workdir .smoke --seed 42
+
+accept:
+	uv run ruff check . && uv run pytest && uv run python -m bm25_vfs_ablation smoke --workdir .smoke --seed 42
