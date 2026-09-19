@@ -1,0 +1,52 @@
+schema_version: 1
+experiment:
+  experiment_id: null
+  seed: 42
+  conditions: [snippets, vfs]
+  token_ceiling: 4096
+  concurrency: 1
+  oracle_mode: false
+  resume: true
+  output_runs: results/intervention_runs.jsonl
+corpus:
+  corpus_path: data/generated/corpus.jsonl
+  tasks_path: data/generated/tasks.jsonl
+  corpus_version: synthetic-v1
+chunking:
+  chunk_size_tokens: 180
+  chunk_overlap_tokens: 30
+retrieval:
+  implementation: rank_bm25_okapi
+  top_k: 8
+  k1: 1.5
+  b: 0.75
+  epsilon: 0.25
+  query_tokenizer: unicode_word_v1
+harness:
+  retrieval_context_tokens: 1800
+  max_answer_tokens: 256
+  max_tool_calls: 8
+  invalid_call_limit: 3
+  tool_result_tokens_per_call: 768
+  initial_candidate_documents: 5
+model:
+  provider: mock
+  base_url: http://127.0.0.1:8000/v1
+  api_key: null
+  model: mock-scripted-v1
+  temperature: 0.0
+  top_p: 1.0
+  seed: 42
+  timeout_seconds: 60.0
+  max_attempts: 2
+  tokenizer: regex_v1
+evaluation:
+  bootstrap_resamples: 10000
+  bootstrap_seed: 20250308
+  confidence_level: 0.95
+  judge_enabled: false
+  estimated_input_usd_per_million: 0.0
+  estimated_output_usd_per_million: 0.0
+intervention:
+  enabled: true
+  max_tool_calls: [0, 1, 2, 4, 8, 12]

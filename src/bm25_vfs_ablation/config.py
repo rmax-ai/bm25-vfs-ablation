@@ -134,10 +134,23 @@ class InterventionConfig(_StrictModel):
 
     @field_validator("max_tool_calls")
     @classmethod
-    def _validate_nonnegative_limits(cls, value: list[int]) -> list[int]:
+    def _validate_limits(cls, value: list[int]) -> list[int]:
         if any(limit < 0 for limit in value):
             raise ValueError("max_tool_calls must contain only nonnegative values")
+        if any(
+            previous >= current
+            for previous, current in zip(value, value[1:], strict=False)
+        ):
+            raise ValueError(
+                "max_tool_calls must be strictly increasing with unique values"
+            )
         return value
+
+    @model_validator(mode="after")
+    def _validate_enabled_grid(self) -> InterventionConfig:
+        if self.enabled and not self.max_tool_calls:
+            raise ValueError("enabled intervention requires a non-empty max_tool_calls grid")
+        return self
 
 
 class AppConfig(_StrictModel):
