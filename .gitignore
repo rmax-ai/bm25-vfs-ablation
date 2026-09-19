@@ -29,5 +29,12 @@ data/*
 results/*
 !results/.gitkeep
 
+# Smoke workspaces (`make smoke` / `make accept` write here; regenerable)
+.smoke/
+
+# Generated reports (regenerable from runs + aggregates)
+reports/*
+!reports/.gitkeep
+
 # OS
 .DS_Store

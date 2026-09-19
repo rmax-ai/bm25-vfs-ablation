@@ -27,10 +27,15 @@ intervention; real network calls in tests (the mock model is the acceptance path
 ## Commands
 
 ```bash
-uv sync --dev                             # host-side install (sandbox has no network)
+uv sync --frozen                          # host-side install (sandbox has no network)
 uv run ruff check . && uv run ruff format --check .
-uv run pytest -q                          # hermetic; mocked model
+uv run pytest                             # hermetic; mocked model
+uv run python -m bm25_vfs_ablation smoke --workdir .smoke --seed 42   # offline end-to-end
 ```
+
+The operator-owned `Makefile` wraps these plus the full pipeline:
+`make setup | lint | test | generate | experiment | intervention | evaluate | report | smoke | accept`
+(exit codes: 0 success, 2 user/config/schema error, 1 runtime/model error).
 
 ## Conventions
 
