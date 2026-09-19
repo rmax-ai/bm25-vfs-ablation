@@ -1,0 +1,92 @@
+# Live-model primary experiment — operator runbook (first live spend).
+#
+# This config drives the first live-model run of the primary ablation cells
+# only: snippets vs vfs, no oracle, no tool-call intervention. Mock records must
+# never be pooled with live records; keep the two runs in separate output paths
+# (records carry returned_model_id and mock_oracle_policy, and the report layer
+# fails closed on mixed provenance).
+#
+# Prerequisites:
+#   make generate                # seed 42; anchors: corpus aa67f865…, tasks 63c97044… (README/tests)
+#   export BM25_VFS_BASE_URL=…   # OpenAI-compatible endpoint, e.g. https://host/v1
+#   export BM25_VFS_API_KEY=…
+#   export BM25_VFS_MODEL=…      # exact served model identifier
+#
+# Sequence — pilot first, review pilot records before the full spend:
+#   uv run python -m bm25_vfs_ablation run --config configs/live.yaml \
+#       --split eval --task-limit 10 --runs results/live-pilot/runs.jsonl
+#   uv run python -m bm25_vfs_ablation run --config configs/live.yaml --split eval
+#   uv run python -m bm25_vfs_ablation evaluate --runs results/live/runs.jsonl \
+#       --output-dir results/live/aggregates --plots-dir results/live/plots
+#   uv run python -m bm25_vfs_ablation report --runs results/live/runs.jsonl \
+#       --aggregates-dir results/live/aggregates --plots-dir results/live/plots \
+#       --output reports/live-experiment.md
+#   (If the full run is interrupted, rerun the same command: resume=true skips
+#   completed run keys.)
+#
+# Operator gates carried from the adversarial integrity review (issue #49):
+#   - max_attempts: 1 — AIR-4: failed/retried attempts can be billed but are not
+#     visible in records when retries are enabled; retries stay off for run one.
+#   - No oracle cells — AIR-2/AIR-6 gate oracle/intervention cells only, not the
+#     primary run.
+#   - No tool-call intervention in this config — runs later, after primary
+#     analysis, via a separate config.
+#   - token_ceiling: 8192 (default.yaml keeps 4096 for mock/smoke; post-AIR-1
+#     honest schema charging means 4096 cannot complete most 4-hop VFS tasks,
+#     censoring the hardest cells — see issue #49 cost note).
+#   - If the pilot reveals a defect and any code changes, delete results/live/
+#     and results/live-pilot/ (runs + cache) before rerunning: provenance hashes
+#     bind config and corpus, not code (AIR-12 residual).
+#
+# NOTE: estimated_*_usd_per_million are placeholders (0.0 = cost not computed).
+# Set them to the endpoint's per-million input/output prices to have
+# estimated_cost_usd populated in every record and in the report.
+schema_version: 1
+experiment:
+  experiment_id: null
+  seed: 42
+  conditions: [snippets, vfs]
+  token_ceiling: 8192
+  concurrency: 1
+  oracle_mode: false
+  resume: true
+  output_runs: results/live/runs.jsonl
+corpus:
+  corpus_path: data/generated/corpus.jsonl
+  tasks_path: data/generated/tasks.jsonl
+  corpus_version: synthetic-v1
+chunking:
+  chunk_size_tokens: 180
+  chunk_overlap_tokens: 30
+retrieval:
+  implementation: rank_bm25_okapi
+  top_k: 8
+  k1: 1.5
+  b: 0.75
+  epsilon: 0.25
+  query_tokenizer: unicode_word_v1
+harness:
+  retrieval_context_tokens: 1800
+  max_answer_tokens: 256
+  max_tool_calls: 8
+  invalid_call_limit: 3
+  tool_result_tokens_per_call: 768
+  initial_candidate_documents: 5
+model:
+  provider: openai_compatible
+  base_url: ""
+  api_key: null
+  model: ""
+  temperature: 0.0
+  top_p: 1.0
+  seed: 42
+  timeout_seconds: 120.0
+  max_attempts: 1
+  tokenizer: regex_v1
+evaluation:
+  bootstrap_resamples: 10000
+  bootstrap_seed: 20250308
+  confidence_level: 0.95
+  judge_enabled: false
+  estimated_input_usd_per_million: 0.0
+  estimated_output_usd_per_million: 0.0
